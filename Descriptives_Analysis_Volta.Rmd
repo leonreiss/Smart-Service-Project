@@ -1,0 +1,341 @@
+---
+title: "SSP Group 10"
+author: "Leon Reiß"
+date: "`r Sys.Date()`"
+output: word_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r User input, include=TRUE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# Add necessary packages here!
+packages <- c("dplyr", "tidyr", "ggplot2","openxlsx", "readxl", "lubridate", "caret", "randomForest", "e1071", "doParallel", "pROC", "slider", "purrr")
+
+# Adjust your path here!
+main_path <- "/Users/leonreiss/Desktop/VOLTA_LIMBURG_PIPELINE/Monteursbezoeken_TTL.xlsx"
+
+```
+
+```{r setup, include=TRUE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# Function to check and install missing packages
+install_and_load <- function(packages) {
+  for (package in packages) {
+    if (!requireNamespace(package, quietly = TRUE)) {
+      install.packages(package)
+    }
+    library(package, character.only = TRUE)
+  }
+}
+
+install_and_load(packages)
+```
+
+```{r set file path and read files, include=TRUE}
+
+# read cleaned excel file 
+Monteursbezoeken_TTL <- read_excel(main_path)
+
+#checking the variables
+str(Monteursbezoeken_TTL)
+
+```
+
+```{r data cleaning based on age_in_days, include=TRUE}
+
+boxplot(Monteursbezoeken_TTL$Age_in_days, 
+        main = "Boxplot of Age_in_days",    # Title of the plot
+        ylab = "Age in Days",               # Label for the y-axis
+        col = "skyblue",                    # Color of the boxes
+        border = "black",                   # Color of the borders
+        horizontal = TRUE) 
+
+#Filtering of value smaller than 0 (already included in pipeline)
+#Monteursbezoeken_TTL <- Monteursbezoeken_TTL[Monteursbezoeken_TTL$Age_in_days > 0, ]
+
+```
+
+```{r Boxplots of selected nummerical variables, include=FALSE}
+
+# List of variables for which to create boxplots
+variables <- c("Age_in_days", "year_of_construction", "Total_Qty_Used", 
+               "current_date_in_days", "Date_Last_Error_Code_Before", 
+               "Days_since_last_error_code", "Error_Code_Count_Before", 
+               "CS_Error_Code_Count_Before", "Qty_Materials_used_Last_Error_Code_Before")
+
+# Create boxplots for each variable
+for (var in variables) {
+    p <- ggplot(Monteursbezoeken_TTL, aes_string(y = var)) +
+        geom_boxplot(fill = "skyblue", color = "black") +
+        labs(title = paste("Boxplot of", var, "(Monteursbezoeken_TTL)"),
+             ylab = var,
+             xlab = "") +
+        theme_minimal() +
+        theme(axis.title.x = element_blank(),
+              plot.title = element_text(hjust = 0.5)) + # Centering title
+        coord_flip()  # Horizontal boxplots
+  
+    print(p)  # Display the plot
+}
+
+```
+
+```{r Contingency table, include=TRUE}
+
+# Convert Total_Qty_Used to a categorical variable based on the conditions
+Monteursbezoeken_TTL$Total_Qty_Used_cat <- ifelse(Monteursbezoeken_TTL$Total_Qty_Used > 0, "More than 0", "Equals 0")
+
+# Create a contingency table
+cont_table <- table(Monteursbezoeken_TTL$Total_Qty_Used_cat, Monteursbezoeken_TTL$Csolvable)
+
+# Display the table
+cont_table
+
+# Calculate percentages of the total
+percent_table <- prop.table(cont_table) * 100
+
+# Display the percentage table
+percent_table
+
+
+```
+Note: Hypothesis for no materials used -> high probability of customer solvable is not true. But on the other side we can see that there is a higher probability of not customer solvable if there are materials used.
+
+```{r time series of incidents, include=TRUE}
+
+################## DISTINCT COUNT OF PREFIX ##################
+
+# Make sure that CREATE_DATE is in date format
+#Monteursbezoeken_TTL$CREATE_DATE <- as.Date(Monteursbezoeken_TTL$CREATE_DATE)
+
+# Extract year from CREATE_DATE
+Monteursbezoeken_TTL$Year <- year(Monteursbezoeken_TTL$CREATE_DATE)
+
+# Aggregate data
+daily_unique_prefixes <- Monteursbezoeken_TTL %>%
+  group_by(Year, CREATE_DATE) %>%
+  summarise(Unique_Call_Prefix_Count = n_distinct(CALL_PREFIX), .groups = 'drop')
+
+# Function to create the plot for a specific year
+plot_year <- function(data, year) {
+  yearly_data <- data %>% filter(Year == year)
+  
+  p <- ggplot(yearly_data, aes(x = CREATE_DATE, y = Unique_Call_Prefix_Count)) +
+    geom_line(color = "blue") +  # lineplot
+    geom_point(color = 'blue', size = 1, alpha = 0.6) +  # Points for single days
+    labs(title = paste("Daily Count of Unique CALL_PREFIX for Year", year),
+         x = "Date",
+         y = "Unique CALL_PREFIX Count") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))  # Inclination of the x-axis labels
+  
+  print(p)
+}
+
+# Create individual plots for each year in the data set
+unique_years <- unique(daily_unique_prefixes$Year)
+for (year in unique_years) {
+  plot_year(daily_unique_prefixes, year)
+}
+
+
+################## MULTIPLE COUNT OF PREFIX ##################
+
+# Make sure that CREATE_DATE is in date format
+Monteursbezoeken_TTL$CREATE_DATE <- as.Date(Monteursbezoeken_TTL$CREATE_DATE)
+
+# Extract year from CREATE_DATE
+Monteursbezoeken_TTL$Year <- year(Monteursbezoeken_TTL$CREATE_DATE)
+
+# Aggregate data without n_distinct() to count all occurrences
+daily_prefixes <- Monteursbezoeken_TTL %>%
+  group_by(Year, CREATE_DATE) %>%
+  summarise(Call_Prefix_Count = n(), .groups = 'drop')
+
+# Function to create the plot for a specific year
+plot_year <- function(data, year) {
+  yearly_data <- data %>% filter(Year == year)
+  
+  p <- ggplot(yearly_data, aes(x = CREATE_DATE, y = Call_Prefix_Count)) +
+    geom_line(color = "blue") +  # Lineplot
+    geom_point(color = 'blue', size = 1, alpha = 0.6) +  # Points for single days
+    labs(title = paste("Total Call Prefix Count per Day for Year", year),
+         x = "Date",
+         y = "Total Call Prefix Count") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))  # Inclination of the x-axis labels
+  
+  print(p)
+}
+
+# Create individual plots for each year in the data set
+unique_years <- unique(daily_prefixes$Year)
+for (year in unique_years) {
+  plot_year(daily_prefixes, year)
+}
+
+```
+The diagrams reveal that from 2017 to 2023, there are 11 specific days where 40% of the cases are concentrated. This concentration significantly distorts all time-related metrics! Typically, these anomalies occur in January and February, with two specific days each year showing these discrepancies. Further examination of the raw dataset confirmed that these errors are indeed present there as well. Year 2016 is the only one which is correct.
+
+
+```{r Investigating Extreme Outliers}
+
+# Identify days with unusually high CALL_PREFIX counts
+spike_days <- daily_prefixes %>% 
+  filter(Call_Prefix_Count > 500)  # Setting a threshold of 500 for spikes
+
+# View the dates and counts
+print(spike_days)
+
+# Function to extract details for specific days and return as dataframe
+analyze_spike_days <- function(data, date) {
+  specific_day_data <- data %>% 
+    filter(CREATE_DATE == as.Date(date))
+  
+  return(specific_day_data)
+}
+
+# Apply the analyze_spike_days function to each date identified as a spike and combine results
+filtered_outliers <- spike_days %>%
+  pull(CREATE_DATE) %>%
+  map_df(~ analyze_spike_days(Monteursbezoeken_TTL, .))
+
+# Display the filtered_outliers table
+print(filtered_outliers)
+
+```
+
+Note: We checked with the raw data table from monteursbezeuken and it turned out that the sum of these outliers on these 11 days also makes 40% of the whole dataset. In our cleaned dataset: From the 32369 cases in total there are 13.949 cases at 11 days. So consequently it is not because of a mistake during the merging.
+
+```{r plot delta of temprature to see distribution, include=TRUE}
+# Plot histogram of Max_Delta_T to see distrubution
+ggplot(Monteursbezoeken_TTL, aes(x = Max_Delta_T)) +
+  geom_histogram(binwidth = 1, color = "black", fill = "blue") +
+  labs(title = "Distribution of Maximum Temperature Delta over 5 Previous Days",
+       x = "Maximum Delta Temperature (°C)",
+       y = "Frequency") +
+  theme_minimal()
+
+```
+
+```{r Stacked Bar chart for CS per product, include=FALSE}
+
+# Load necessary libraries
+library(ggplot2)
+library(dplyr)
+
+# Assuming your data frame is named 'data'
+# Calculate the proportions of Csolvable for each product_description
+datasummary <- Monteursbezoeken_TTL %>%
+  group_by(Product_description, Csolvable) %>%
+  summarise(Count = n(), .groups = 'drop') %>%
+  group_by(Product_description) %>%
+  mutate(Proportion = Count / sum(Count))
+
+# View the prepared data
+print(datasummary)
+
+# Calculate the unique UnitNo counts per Product_description
+unique_unitno_summary <- Monteursbezoeken_TTL %>%
+  group_by(Product_description) %>%
+  summarise(Unique_UnitNo_Count = n_distinct(UnitNo), .groups = 'drop')
+
+# Ensure datasummary includes Unique_UnitNo_Count
+# Sort Product_description based on Unique_UnitNo_Count in descending order
+datasummary <- datasummary %>%
+  left_join(unique_unitno_summary, by = "Product_description") %>%
+  mutate(Product_description = reorder(Product_description, -Unique_UnitNo_Count))
+
+# Create a stacked bar chart and annotate with Unique_UnitNo_Count
+ggplot(datasummary, aes(x = Product_description, y = Proportion, fill = as.factor(Csolvable))) +
+  geom_bar(stat = "identity", position = "fill") +  # 'position = "fill"' normalizes the bar heights to 1
+  scale_fill_manual(values = c("red", "blue"), labels = c("Csolvable = 0", "Csolvable = 1")) +
+  geom_text(aes(label = Unique_UnitNo_Count, y = 1.02), vjust = -0.5, color = "black", size = 3.5) +
+  labs(title = "Proportion of Csolvable by Product Description",
+       subtitle = "Number above bars indicates unique UnitNo counts",
+       x = "Product Description",
+       y = "Proportion",
+       fill = "Csolvable") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))  # Adjust text angle for readability
+
+```
+
+
+```{r CS per Age_in_days (bins)}
+# Cut Age_in_days into bins and assign to Age_Bin
+Monteursbezoeken_TTL$Age_Bin <- cut(Monteursbezoeken_TTL$Age_in_days, 
+                                    breaks = seq(0, 730*16, by = 730), 
+                                    include.lowest = TRUE, 
+                                    labels = FALSE)
+
+# Define custom labels for age bins
+age_bin_labels <- c("1-2 years", "2-4 years", "4-6 years", "6-8 years", "8-10 years", "10-12 years", "12-14 years", "14-16 years")
+
+# Calculate the proportion of Csolvable within each Age_Bin
+datasummary2 <- Monteursbezoeken_TTL %>%
+  group_by(Age_Bin, Csolvable) %>%
+  summarise(Count = n(), .groups = 'drop') %>%
+  mutate(Total = sum(Count), Proportion = Count / Total) %>%
+  mutate(Age_Bin = as.factor(Age_Bin))  # Convert Age_Bin to factor first
+
+# Ensure that levels of Age_Bin are in the correct order
+datasummary2$Age_Bin <- factor(datasummary2$Age_Bin, levels = unique(datasummary2$Age_Bin))
+
+# View the prepared data
+print(datasummary2)
+
+# Create a proportion bar chart
+ggplot(datasummary2, aes(x = Age_Bin, y = Proportion, fill = as.factor(Csolvable))) +
+  geom_bar(stat = "identity", position = "fill") + # Using fill for proportions
+  #geom_line(data = datasummary2 , aes(x = Age_Bin_Labels, y = Proportion, group = 1), color = "red", size = 1) +
+  scale_fill_manual(values = c("grey", "blue"), labels = c("Csolvable = 0", "Csolvable = 1")) +
+  labs(title = "Proportion of Csolvable Occurrences by Age in Days",
+       x = "Age in 2 Year Bins",
+       y = "Proportion",
+       fill = "Csolvable") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) # Rotate x-axis labels for better visibility
+
+```
+
+```{r Stacked Bar chart for CS per product, include=FALSE}
+
+# Calculate the proportions of Csolvable for each product_description
+datasummary <- Monteursbezoeken_TTL %>%
+  group_by(Product_description, Csolvable) %>%
+  summarise(Count = n(), .groups = 'drop') %>%
+  group_by(Product_description) %>%
+  mutate(Proportion = Count / sum(Count))
+
+# View the prepared data
+print(datasummary)
+
+# Calculate the unique UnitNo counts per Product_description
+unique_unitno_summary <- Monteursbezoeken_TTL %>%
+  group_by(Product_description) %>%
+  summarise(Unique_UnitNo_Count = n_distinct(UnitNo), .groups = 'drop')
+
+# Sort Product_description based on Unique_UnitNo_Count in descending order
+datasummary <- datasummary %>%
+  left_join(unique_unitno_summary, by = "Product_description") %>%
+  mutate(Product_description = reorder(Product_description, -Unique_UnitNo_Count))
+
+# Create a stacked bar chart and annotate with Unique_UnitNo_Count
+ggplot(datasummary, aes(x = Product_description, y = Proportion, fill = as.factor(Csolvable))) +
+  geom_bar(stat = "identity", position = "fill") +  # 'position = "fill"' normalizes the bar heights to 1
+  scale_fill_manual(values = c("red", "blue"), labels = c("Csolvable = 0", "Csolvable = 1")) +
+  geom_text(aes(label = Unique_UnitNo_Count, y = 1.02), vjust = -0.5, color = "black", size = 3.5) +
+  labs(title = "Proportion of Csolvable by Product Description",
+       subtitle = "Number above bars indicates unique UnitNo counts",
+       x = "Product Description",
+       y = "Proportion",
+       fill = "Csolvable") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))  # Adjust text angle for readability
+
+```
+

@@ -1,0 +1,604 @@
+---
+title: "SSP Group 10"
+author: "Leon Reiß"
+date: "`r Sys.Date()`"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r set working directory, echo=FALSE}
+# adjust directory
+setwd("C:/Users/samie/OneDrive/Dokumente/Maasi/SBE/Master/Period 4/Smart Service Project (6.5 ECTS) (2324-EBP4007)/Data")
+```
+
+
+```{r install and load packages}
+
+# Load necessary libraries
+# List of packages to install and load
+
+packages <- c("dplyr", "tidyr", "ggplot2","openxlsx", "readxl", "lubridate", "caret", "randomForest", "e1071", "doParallel", "pROC", "slider")
+
+# Function to check and install missing packages
+install_and_load <- function(packages) {
+  for (package in packages) {
+    if (!requireNamespace(package, quietly = TRUE)) {
+      install.packages(package)
+    }
+    library(package, character.only = TRUE)
+  }
+}
+
+# Apply the function
+install_and_load(packages)
+
+
+
+```
+
+
+In this section we will upload the necessary data tables provided by Volta.
+
+```{r load source data, echo=FALSE}
+
+# Read .xlsx source data.
+
+# Loading Foutcode tables which contain the error codes for each incident.
+Foutcode1 <- read_excel("C:/Users/samie/OneDrive/Dokumente/Maasi/SBE/Master/Period 4/Smart Service Project (6.5 ECTS) (2324-EBP4007)/Data/Data Volta foutcode 2010 2011 2012 2013 2014.xlsx")
+
+Foutcode2 <- read_excel("C:/Users/samie/OneDrive/Dokumente/Maasi/SBE/Master/Period 4/Smart Service Project (6.5 ECTS) (2324-EBP4007)/Data/Data Volta foutcode 2015 2016 2017 2018 2019.xlsx")
+
+Foutcode3 <- read_excel("C:/Users/samie/OneDrive/Dokumente/Maasi/SBE/Master/Period 4/Smart Service Project (6.5 ECTS) (2324-EBP4007)/Data/Data Volta foutcode 2020 2021 2022 2023.xlsx")
+
+# Loading gebruikte Materialien tables which contain the used materials for each incident.
+GebruikteMat1 <- read_excel("C:/Users/samie/OneDrive/Dokumente/Maasi/SBE/Master/Period 4/Smart Service Project (6.5 ECTS) (2324-EBP4007)/Data/Data Volta gebruikte materialen 2010 2011 2012 2013 2014.xlsx")
+
+GebruikteMat2 <- read_excel("C:/Users/samie/OneDrive/Dokumente/Maasi/SBE/Master/Period 4/Smart Service Project (6.5 ECTS) (2324-EBP4007)/Data/Data Volta gebruikte materialen 2015 2016 2017 2018 2019.xlsx")
+
+GebruikteMat3 <- read_excel("C:/Users/samie/OneDrive/Dokumente/Maasi/SBE/Master/Period 4/Smart Service Project (6.5 ECTS) (2324-EBP4007)/Data/Data Volta gebruikte materialen 2020 2021 2022 2023.xlsx")
+
+
+# Loading Monteursbezoeken table which contains all the Unit and customer specific information for each incident.
+Monteursbezoeken <- read_excel("C:/Users/samie/OneDrive/Dokumente/Maasi/SBE/Master/Period 4/Smart Service Project (6.5 ECTS) (2324-EBP4007)/Data/Data Volta Monteursbezoeken.xlsx")
+
+
+# Loading Data Volta Foutcode omschrijving table which contains a general overview of every error code and if it is customer solvable or not.
+FC_Csolvable <- read_excel("C:/Users/samie/OneDrive/Dokumente/Maasi/SBE/Master/Period 4/Smart Service Project (6.5 ECTS) (2324-EBP4007)/Data/Data Volta Foutcode omschrijving.xlsx")
+
+
+
+# Changing column names in Monteursbezoeken so that they align with the different tables.
+colnames(Monteursbezoeken)[c(1,2,3,14, 15, 18)] <- c(
+    "CALL_PREFIX",
+    "CALL_SUFFIX",
+    "CREATE_DATE",
+    "Comment_from_mechanic", 
+    "Product_description", 
+    "year_of_construction"
+)
+
+
+
+```
+
+
+In this section, the several data tables will be merged with each other to create one big table "Monteursbezoeken_TTL" containing all information necessary to build a model. The central table to create "Monteursbezoeken_TTL" will be "Monteursbezoeken". Monteursbezoeken contains every incident with information regarding the exact device which is necessary since our model will predict per device whether the next incident is customer solvable or not. We will now complement the Monteursbezoeken table with data regarding error codes and used materials. 
+
+```{r Data merging, echo=FALSE}
+
+# Merging all three Foutcode tables into one.
+Foutcode <- rbind(Foutcode1,Foutcode2,Foutcode3)
+
+# Merging all three gebruikte materialen tables into one.
+GebruikteMat <- rbind(GebruikteMat1, GebruikteMat2, GebruikteMat3)
+
+#Aligning column name for creation date in Foutcode with other tables.
+colnames(Foutcode)[4] <- "CREATE_DATE"
+
+
+# Now we have three tables with incidents. Foutcode, Gebruikte Materialien & Monteursbezoeken.
+# The Foutcode omschrijving table will complement our final table.
+
+
+# Generating incident identifier with Prefix and Suffix for each table.
+Foutcode$Identifier <- paste(Foutcode$CALL_PREFIX, Foutcode$CALL_SUFFIX)
+GebruikteMat$Identifier <- paste(GebruikteMat$CALL_PREFIX, GebruikteMat$CALL_SUFFIX)
+Monteursbezoeken$Identifier <- paste(Monteursbezoeken$CALL_PREFIX, Monteursbezoeken$CALL_SUFFIX)
+
+
+
+# Adding Foutcode to Monteursbezoeken to get the error codes for every incident.
+Monteursbezoeken_FC <- Monteursbezoeken %>%
+  inner_join(Foutcode, by = "Identifier")
+
+
+# Excluding observations where identical materials used appear twice or more for the same identifier by adding them together.
+GebruikteMat <- GebruikteMat %>%
+  group_by(Identifier, USED_PROD,CALL_PREFIX, CALL_SUFFIX) %>%
+  summarise(Total_Qty_Used = sum(USED_QTY), .groups = "drop")
+
+
+#Adding GebruikteMat to Monteursbezoeken to get the used materials and their quantities for every identifier.
+Monteursbezoeken_GM <- Monteursbezoeken %>%
+  inner_join(GebruikteMat, by = "Identifier")
+
+
+# Now we have two versions of Monteursbezoeken. One containing the error codes and one the used materials. Since used materials only relate to every single identifier but not every single error code within each incident, we cannot merge these data sets directly without losing the accuracy of the materials assignment. That is why we assign the total number of used materials to every error code of the same identifier. 
+
+# Aggregating total materials used per incident from the Monteursbezoeken_GM table.
+materials_per_incident <- Monteursbezoeken_GM %>%
+    group_by(Identifier) %>%
+    summarise(Total_Qty_Used = sum(Total_Qty_Used))
+
+# Complementing Monteursbezoeken_FC with materials_per_incident to get our final table "Monteursbezoeken_TTL" that contains error codes and quantities of used materials per identifier.
+Monteursbezoeken_TTL <- Monteursbezoeken_FC %>%
+    left_join(materials_per_incident, by = "Identifier")
+
+# Creating an auxiliary column that will count how many error codes each identifier consists of.
+errors_per_incident <- Monteursbezoeken_TTL %>%
+    group_by(Identifier) %>%
+    mutate(Errors_per_Incident = n())
+
+# Creating an auxiliary column that will divide the number of materials used by the number of error codes for each identifier to be able to sum the total materials used for each identifier.
+Monteursbezoeken_TTL <- errors_per_incident %>%
+    mutate(Materials_per_Error = Total_Qty_Used / Errors_per_Incident)
+
+
+
+# Adding the descriptions of error codes to Monteursbezoeken_TTL to classify each incident as customer solvable (1) or not customer solvable (0). 
+Monteursbezoeken_TTL <- merge(Monteursbezoeken_TTL, FC_Csolvable, by.x = "FAULT_CODE", by.y = "CODE", all.x = TRUE)
+
+# Rename the merged column to "Csolvable".
+names(Monteursbezoeken_TTL)[names(Monteursbezoeken_TTL) == "Csolvable(Y/N)"] <- "Csolvable"
+
+
+# Excluding columns that appear twice through the merging process.
+Monteursbezoeken_TTL <- Monteursbezoeken_TTL %>%
+    select(-c("CALL_PREFIX.y", "CALL_SUFFIX.y", "CREATE_DATE.y", "CREATE_DATE", "DESCRIPTION", )) %>%
+    rename(
+        CALL_PREFIX = "CALL_PREFIX.x", 
+        CALL_SUFFIX = "CALL_SUFFIX.x",
+        CREATE_DATE = "CREATE_DATE.x",
+        error_code_group = "error code group"
+       
+    )
+
+
+
+# All missing values in Total_Qty_Used mean that no materials were used that is why they are replaced with 0.
+Monteursbezoeken_TTL$Total_Qty_Used[is.na(Monteursbezoeken_TTL$Total_Qty_Used)] <- 0
+
+
+```
+
+
+After creating the Monteursbezoeken_TTL table with all the incident details, we will use this data to create important variables. These will help us compute a probability if a customer can solve a problem on their own next time they call, or if they will need a technician to come.
+
+
+```{r creating model dataframe}
+
+
+# Exclude rows where there is no year_of_construction value
+Monteursbezoeken_TTL <- Monteursbezoeken_TTL %>%
+  filter(!is.na(year_of_construction))  
+
+# Convert CREATE_DATE to Date format
+Monteursbezoeken_TTL$CREATE_DATE <- as.POSIXct(Monteursbezoeken_TTL$CREATE_DATE)
+
+
+# Here we start adding columns
+
+# Add a new column for Age_in_days of the device####
+Monteursbezoeken_TTL <- Monteursbezoeken_TTL %>%
+  mutate(
+    Age_in_days = as.numeric(difftime(CREATE_DATE, as.Date(paste0(year_of_construction, "-01-01")), units = "days"))
+  )
+
+
+# Add a column to have the current data as a number of days starting from the 1st of Jan of the earliest year in the dataset####
+
+# Determine the earliest year in the dataset
+earliest_year <- min(Monteursbezoeken_TTL$CREATE_DATE)
+
+# Calculate the number of days between each CREATE_DATE and the 1st of January of the earliest year
+Monteursbezoeken_TTL <- Monteursbezoeken_TTL %>%
+  mutate(
+    current_date_in_days = as.numeric(difftime(CREATE_DATE, as.Date(paste0(as.integer(format(earliest_year, "%Y")), "-01-01")), units = "days"))
+  )
+
+
+# For every observation we add the last error code that happened####
+
+# Arranging Monteursbezoeken_TTL by Devices and the current date
+Monteursbezoeken_TTL <- Monteursbezoeken_TTL %>%
+  arrange(UnitNo, current_date_in_days)
+
+
+# Add Last_Error_Code_Before to store the error code occuring on a date before the current one
+Monteursbezoeken_TTL <- Monteursbezoeken_TTL %>%
+  group_by(UnitNo) %>%
+  mutate(
+    Last_Error_Code_Before = if_else(current_date_in_days > lag(current_date_in_days), lag(FAULT_CODE), NA_character_)
+  )
+
+# Creating a helper column to help store the correct values
+Monteursbezoeken_TTL <- Monteursbezoeken_TTL %>%
+  group_by(Identifier) %>%
+  mutate(
+    Replacement_Code = max(Last_Error_Code_Before, na.rm = TRUE)  # This takes a non-NA max, which should work if there's at least one non-NA value
+  ) %>%
+  ungroup()
+
+# The values from replacement code will be put into Last_Error_Code_Before
+Monteursbezoeken_TTL <- Monteursbezoeken_TTL %>%
+  mutate(
+    Last_Error_Code_Before = if_else(is.na(Last_Error_Code_Before), Replacement_Code, Last_Error_Code_Before)
+  )
+
+# Remove helper column
+Monteursbezoeken_TTL <- Monteursbezoeken_TTL %>%
+  select(-Replacement_Code)
+
+
+
+# For every observation we add the respective identifier for last error code that happened.####
+
+# Arranging Monteursbezoeken_TTL by Devices and the current date
+Monteursbezoeken_TTL <- Monteursbezoeken_TTL %>%
+  arrange(UnitNo, current_date_in_days)  # Ensure data is sorted by unit and date
+
+# Add Identifier_Last_Error_Code_Before to store the error code occuring on a date before the current one
+Monteursbezoeken_TTL <- Monteursbezoeken_TTL %>%
+  group_by(UnitNo) %>%
+  mutate(
+    Identifier_Last_Error_Code_Before = if_else(current_date_in_days > lag(current_date_in_days), lag(Identifier), NA_character_)
+  )
+
+# Creating a helper column to help store the correct values
+Monteursbezoeken_TTL <- Monteursbezoeken_TTL %>%
+  group_by(Identifier) %>%
+  mutate(
+    Replacement_Code = max(Identifier_Last_Error_Code_Before, na.rm = TRUE)
+  ) %>%
+  ungroup()
+
+# The values from replacement code will be put into Identifier_Last_Error_Code_Before
+Monteursbezoeken_TTL <- Monteursbezoeken_TTL %>%
+  mutate(
+    Identifier_Last_Error_Code_Before = if_else(is.na(Identifier_Last_Error_Code_Before), Replacement_Code, Identifier_Last_Error_Code_Before)
+  )
+
+# Remove helper column
+Monteursbezoeken_TTL <- Monteursbezoeken_TTL %>%
+  select(-Replacement_Code)
+
+
+
+# For every observation we add the respective date for last error code that happened.####
+
+
+# Arranging Monteursbezoeken_TTL by Devices and the current date
+Monteursbezoeken_TTL <- Monteursbezoeken_TTL %>%
+  arrange(UnitNo, current_date_in_days)  # Ensure data is sorted by unit and date
+
+# Add Date_Last_Error_Code_Before to store the error code occuring on a date before the current one
+Monteursbezoeken_TTL <- Monteursbezoeken_TTL %>%
+  group_by(UnitNo) %>%
+  mutate(
+    Date_Last_Error_Code_Before = if_else(current_date_in_days > lag(current_date_in_days), as.character(lag(current_date_in_days)), NA_character_)
+  )
+
+# Creating a helper column to help store the correct values
+Monteursbezoeken_TTL <- Monteursbezoeken_TTL %>%
+  group_by(Identifier) %>%
+  mutate(
+    Replacement_Code = max(as.numeric(Date_Last_Error_Code_Before), na.rm = TRUE)
+  ) %>%
+  ungroup() %>%
+  mutate(
+    Replacement_Code = if_else(is.infinite(Replacement_Code), NA_real_, Replacement_Code) # Replace -Inf with NA
+  )
+
+# The values from replacement code will be put into Date_Last_Error_Code_Before
+Monteursbezoeken_TTL <- Monteursbezoeken_TTL %>%
+  mutate(
+    Date_Last_Error_Code_Before = if_else(is.na(Date_Last_Error_Code_Before), Replacement_Code, as.numeric(Date_Last_Error_Code_Before))
+  )
+
+# Remove helper column
+Monteursbezoeken_TTL <- Monteursbezoeken_TTL %>%
+  select(-Replacement_Code)
+
+
+# Based on the date of the occurence and the date of the last error code we create "Days_since_last_error_code"####
+Monteursbezoeken_TTL$Days_since_last_error_code <-   Monteursbezoeken_TTL$current_date_in_days - Monteursbezoeken_TTL$Date_Last_Error_Code_Before 
+
+
+# Add Date_Last_Error_Code_Before to store the error code occuring on a date before the current one
+# Creating a helper column to help store the correct values
+
+# For every observation we add if the last error code was customer solvable or not.####
+
+# Arranging Monteursbezoeken_TTL by Devices and the current date
+Monteursbezoeken_TTL <- Monteursbezoeken_TTL %>%
+  arrange(UnitNo, current_date_in_days)
+
+# Add Csolvable_Last_Error_Code_Before to store the error code occuring on a date before the current one
+Monteursbezoeken_TTL <- Monteursbezoeken_TTL %>%
+  group_by(UnitNo) %>%
+  mutate(
+    Csolvable_Last_Error_Code_Before = if_else(current_date_in_days > lag(current_date_in_days), as.character(lag(Csolvable)), NA_character_)
+  )
+
+# Creating a helper column to help store the correct values
+Monteursbezoeken_TTL <- Monteursbezoeken_TTL %>%
+  group_by(Identifier) %>%
+  mutate(
+    Replacement_Code = max(as.numeric(Csolvable_Last_Error_Code_Before), na.rm = TRUE)  # Convert Date_Last_Error_Code_Before to numeric
+  ) %>%
+  ungroup() %>%
+  mutate(
+    Replacement_Code = if_else(is.infinite(Replacement_Code), NA_real_, Replacement_Code) # Replace -Inf with NA
+  )
+
+# The values from replacement code will be put into Csolvable_Last_Error_Code_Before
+Monteursbezoeken_TTL <- Monteursbezoeken_TTL %>%
+  mutate(
+    Csolvable_Last_Error_Code_Before = if_else(is.na(Csolvable_Last_Error_Code_Before), Replacement_Code, as.numeric(Csolvable_Last_Error_Code_Before))
+  )
+
+# Remove helper column
+Monteursbezoeken_TTL <- Monteursbezoeken_TTL %>%
+  select(-Replacement_Code)
+
+
+
+
+# For every observation we add the total qty of materials used.####
+
+
+# Arranging Monteursbezoeken_TTL by Devices and the current date
+Monteursbezoeken_TTL <- Monteursbezoeken_TTL %>%
+  arrange(UnitNo, current_date_in_days)
+
+# Add Qty_Materials_used_Last_Error_Code_Before to store the error code occuring on a date before the current one.
+Monteursbezoeken_TTL <- Monteursbezoeken_TTL %>%
+  group_by(UnitNo) %>%
+  mutate(
+    Qty_Materials_used_Last_Error_Code_Before = if_else(current_date_in_days > lag(current_date_in_days), as.character(lag(Total_Qty_Used)), NA_character_)
+  )
+
+# Creating a helper column to help store the correct values
+Monteursbezoeken_TTL <- Monteursbezoeken_TTL %>%
+  group_by(Identifier) %>%
+  mutate(
+    Replacement_Code = max(as.numeric(Qty_Materials_used_Last_Error_Code_Before), na.rm = TRUE)
+  ) %>%
+  ungroup() %>%
+  mutate(
+    Replacement_Code = if_else(is.infinite(Replacement_Code), NA_real_, Replacement_Code) # Replace -Inf with NA
+  )
+
+# The values from replacement code will be put into Qty_Materials_used_Last_Error_Code_Before
+Monteursbezoeken_TTL <- Monteursbezoeken_TTL %>%
+  mutate(
+    Qty_Materials_used_Last_Error_Code_Before = if_else(is.na(Qty_Materials_used_Last_Error_Code_Before), Replacement_Code, as.numeric(Qty_Materials_used_Last_Error_Code_Before))
+  )
+
+# Remove helper column
+Monteursbezoeken_TTL <- Monteursbezoeken_TTL %>%
+  select(-Replacement_Code)
+
+
+
+# Adding the total number of previous error codes####
+
+
+# Arranging Monteursbezoeken_TTL by Devices and the current date
+Monteursbezoeken_TTL <- Monteursbezoeken_TTL %>%
+  arrange(UnitNo, CREATE_DATE)
+
+# Add a helper column to store the count of previous errors based on UnitNo
+Monteursbezoeken_TTL <- Monteursbezoeken_TTL %>%
+  group_by(UnitNo) %>%
+  mutate(Number_prev_Error = cumsum(row_number() > 1)) %>%
+  ungroup()
+
+# Arranging Monteursbezoeken_TTL back by Devices and the current date again
+Monteursbezoeken_TTL <- Monteursbezoeken_TTL %>%
+  arrange(UnitNo, CREATE_DATE)
+
+# Arranging Monteursbezoeken_TTL by Devices and the current date
+Monteursbezoeken_TTL <- Monteursbezoeken_TTL %>%
+  arrange(UnitNo, current_date_in_days)
+
+# Add Error_Code_Count_Before for the total count of previous error codes before the current one
+Monteursbezoeken_TTL <- Monteursbezoeken_TTL %>%
+  group_by(UnitNo) %>%
+  mutate(
+    Error_Code_Count_Before = if_else(current_date_in_days > lag(current_date_in_days), as.character(lag(Number_prev_Error)), NA_character_)
+  )
+
+# Add helper column "Replacement_Code" to refine Error_Code_Count_Before to have the right values
+Monteursbezoeken_TTL <- Monteursbezoeken_TTL %>%
+  group_by(Identifier) %>%
+  mutate(
+    Replacement_Code = max(as.numeric(Error_Code_Count_Before), na.rm = TRUE)  # Convert Date_Last_Error_Code_Before to numeric
+  ) %>%
+  ungroup() %>%
+  mutate(
+    Replacement_Code = if_else(is.infinite(Replacement_Code), NA_real_, Replacement_Code) # Replace -Inf with NA
+  )
+
+# Use "Replacement_Code" to refine the new column
+Monteursbezoeken_TTL <- Monteursbezoeken_TTL %>%
+  mutate(
+    Error_Code_Count_Before = if_else(is.na(Error_Code_Count_Before), Replacement_Code+1, as.numeric(Error_Code_Count_Before)+1)
+  )
+
+# Remove helper column
+Monteursbezoeken_TTL <- Monteursbezoeken_TTL %>%
+  select(-Replacement_Code)
+
+
+
+# Adding the total number of previous customer solvable error codes####
+
+
+# Arranging Monteursbezoeken_TTL by Devices and the current date
+Monteursbezoeken_TTL <- Monteursbezoeken_TTL %>%
+  arrange(UnitNo, CREATE_DATE)
+
+# Add a helper column to store the count of previous customer solvable errors based on UnitNo
+Monteursbezoeken_TTL <- Monteursbezoeken_TTL %>%
+  group_by(UnitNo) %>%
+  mutate(Number_prev_Error_CS = cumsum(Csolvable == 1 & row_number())) %>%
+  ungroup()
+
+# Arranging Monteursbezoeken_TTL back by Devices and the current date again
+Monteursbezoeken_TTL <- Monteursbezoeken_TTL %>%
+  arrange(UnitNo, CREATE_DATE)
+
+# Arranging Monteursbezoeken_TTL by Devices and the current date
+Monteursbezoeken_TTL <- Monteursbezoeken_TTL %>%
+  arrange(UnitNo, current_date_in_days)
+
+# Add CS_Error_Code_Count_Before for the total count of previous customer solvable error codes before the current one
+Monteursbezoeken_TTL <- Monteursbezoeken_TTL %>%
+  group_by(UnitNo) %>%
+  mutate(
+    CS_Error_Code_Count_Before = if_else(current_date_in_days > lag(current_date_in_days), as.character(lag(Number_prev_Error_CS)), NA_character_)
+  )
+
+# Add helper column "Replacement_Code" to refine CS_Error_Code_Count_Before to have the right values
+Monteursbezoeken_TTL <- Monteursbezoeken_TTL %>%
+  group_by(Identifier) %>%
+  mutate(
+    Replacement_Code = max(as.numeric(CS_Error_Code_Count_Before), na.rm = TRUE)  # Convert Date_Last_Error_Code_Before to numeric
+  ) %>%
+  ungroup() %>%
+  mutate(
+    Replacement_Code = if_else(is.infinite(Replacement_Code), NA_real_, Replacement_Code) # Replace -Inf with NA
+  )
+
+# Use "Replacement_Code" to refine the new column
+Monteursbezoeken_TTL <- Monteursbezoeken_TTL %>%
+  mutate(
+    CS_Error_Code_Count_Before = if_else(is.na(CS_Error_Code_Count_Before), Replacement_Code, as.numeric(CS_Error_Code_Count_Before))
+  )
+
+# Remove helper column
+Monteursbezoeken_TTL <- Monteursbezoeken_TTL %>%
+  select(-Replacement_Code)
+
+
+```
+
+
+After computing all necessary variables missing values ("NA") are replaced by meaningful values that will be important for the model performance.
+
+
+```{r NA transformation}
+
+#Transforming NAs into understandable values for the model
+
+
+# If Last_Error_Code_Before is NA that means no error code occurred before so we replace by "none"
+Monteursbezoeken_TTL$Last_Error_Code_Before <- ifelse(is.na(Monteursbezoeken_TTL$Last_Error_Code_Before), "none", Monteursbezoeken_TTL$Last_Error_Code_Before)
+
+# If Identifier_Last_Error_Code_Before is NA that means no error code occurred before so we replace by "none"
+Monteursbezoeken_TTL$Identifier_Last_Error_Code_Before <- ifelse(is.na(Monteursbezoeken_TTL$Identifier_Last_Error_Code_Before), "none", Monteursbezoeken_TTL$Identifier_Last_Error_Code_Before)
+
+# If Date_Last_Error_Code_Before is NA that means no error code occurred before so we replace by "-99" to keep the column numeric
+Monteursbezoeken_TTL$Date_Last_Error_Code_Before <- ifelse(is.na(Monteursbezoeken_TTL$Date_Last_Error_Code_Before), -99, Monteursbezoeken_TTL$Date_Last_Error_Code_Before)
+
+# If Days_since_last_error_code is NA that means no error code occurred before so we replace by "-99" to keep the column numeric
+Monteursbezoeken_TTL$Days_since_last_error_code<- ifelse(is.na(Monteursbezoeken_TTL$Days_since_last_error_code), -99, Monteursbezoeken_TTL$Days_since_last_error_code)
+
+# If Csolvable_Last_Error_Code_Before is NA that means no error code occurred before so we replace by "none"
+Monteursbezoeken_TTL$Csolvable_Last_Error_Code_Before <- ifelse(is.na(Monteursbezoeken_TTL$Csolvable_Last_Error_Code_Before), "none", Monteursbezoeken_TTL$Csolvable_Last_Error_Code_Before)
+
+# If Qty_Materials_used_Last_Error_Code_Before is NA that means no materials were used so we replace by "0"
+Monteursbezoeken_TTL$Qty_Materials_used_Last_Error_Code_Before <- ifelse(is.na(Monteursbezoeken_TTL$Qty_Materials_used_Last_Error_Code_Before), 0, Monteursbezoeken_TTL$Qty_Materials_used_Last_Error_Code_Before)
+
+# If Error_Code_Count_Before is NA that means no error codes occurred before so we replace by "0" to keep column numeric
+Monteursbezoeken_TTL$Error_Code_Count_Before<- ifelse(is.na(Monteursbezoeken_TTL$Error_Code_Count_Before), 0 , Monteursbezoeken_TTL$Error_Code_Count_Before)
+
+
+# If CS_Error_Code_Count_Before is NA that means no customer solvable error codes occurred before so we replace by "0" to keep column numeric
+Monteursbezoeken_TTL$CS_Error_Code_Count_Before <- ifelse(is.na(Monteursbezoeken_TTL$CS_Error_Code_Count_Before), 0, Monteursbezoeken_TTL$CS_Error_Code_Count_Before)
+
+```
+
+
+The internal Volta data is now ready and will be complemented with weather data. Of interest is the actual temperature, the air pressure, rain and the biggest change in temperature 5 days prior to every observation.
+
+
+```{r adding weather data}
+
+
+# Loading weather data from txt. files and creating weather_data table####
+
+# Initialize an empty data frame to store all data from 2016 to 2023
+weather_2016_2023 <- data.frame()
+
+# Loop through each year from 2016 to 2023
+for (year in 2016:2023) {
+    # Construct the file name based on the year
+    file_name <- sprintf("result%d.txt", year)
+    
+    # Read the data without headers
+    weather_data <- read.table(file_name, header = FALSE, sep = ",", skip = 0, comment.char = "#")
+    
+    # Manually set column names
+    colnames(weather_data) <- c("STN", "YYYYMMDD", "HH", "T", "T10N", "P", "R")
+    
+    # Convert YYYYMMDD from integer to character, then to Date
+    weather_data$YYYYMMDD <- as.Date(as.character(weather_data$YYYYMMDD), format = "%Y%m%d")
+    
+    # Filter for STN "380" = Maastricht weather station 
+    weather_data <- subset(weather_data, STN == 380)
+    
+    # Remove columns "HH", "T10N"
+    weather_data <- weather_data[, !(names(weather_data) %in% c("HH", "T10N"))]
+    
+    # Append to the main dataframe
+    weather_2016_2023 <- rbind(weather_2016_2023, weather_data)
+}
+
+# Arrange dataframe by weather station and date
+weather_2016_2023 <- weather_2016_2023 %>%
+  arrange(STN, YYYYMMDD)
+
+# Adding a column to have the maximum temperature change of the last 5 days before the current one
+weather_2016_2023 <- weather_2016_2023 %>%
+  group_by(STN) %>%
+  mutate(Max_Delta_T = slider::slide_dbl(T, ~ max(.x) - min(.x), .before = 5, .complete = TRUE, .after = -1))
+
+
+# Merging Monteursbezoeken_TTL with weather_data####
+
+
+
+# Making sure both data formats are identical
+Monteursbezoeken_TTL$CREATE_DATE <- as.Date(Monteursbezoeken_TTL$CREATE_DATE)
+weather_2016_2023$YYYYMMDD <- as.Date(weather_2016_2023$YYYYMMDD)
+
+# Merging the datasets on the date columns
+Monteursbezoeken_TTL <- left_join(Monteursbezoeken_TTL, weather_2016_2023, by = c("CREATE_DATE" = "YYYYMMDD"))
+
+
+```
+
+
+
+```{r deleting false values}
+
+# Removing rows where age of the devices is negative due to having an incident date earlier than the year of construction
+Monteursbezoeken_TTL <- Monteursbezoeken_TTL[Monteursbezoeken_TTL$Age_in_days > 0,]
+
+```

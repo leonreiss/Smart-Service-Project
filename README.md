@@ -7,5 +7,11 @@ Project Overview:
 - The solution is scalable and can easily be expanded to include new data sources, such as Sqippa sensors
 - In addition to the model development, ethical, social and business implications were also considered to ensure a sustainable and customer-oriented implementation
 
+Coding Files: 
+- The Project consists of 3 files,namely:
+    1. Volta_Descriptives_Analysis.Rmd
+    2. Volta Data Cleaning.Rmd
+    3. Volta_Model_testing_Final.Rmd
+    4. 
 
-
+Please note that company data can not be published here. Furthermore, results and insights, including the final report, are not permitted to be shared here.

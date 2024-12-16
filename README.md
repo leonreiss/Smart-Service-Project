@@ -8,9 +8,6 @@ Project Overview:
 - In addition to the model development, ethical, social and business implications were also considered to ensure a sustainable and customer-oriented implementation
 
 Coding Files: 
-- The Project consists of 3 files,namely:
-    1. Volta_Descriptives_Analysis.Rmd
-    2. Volta Data Cleaning.Rmd
-    3. Volta_Model_testing_Final.Rmd
+- The Project consisted of multiple files including descriptive statistics, data cleaning and final model testing. To ensure data privacy, only the file "Volta_Model_testing_Final.Rmd" (R-Markup) with the development of the machine learning models are published here. Furthermore, results and insights, including the final report, are not permitted to be shared here.
 
-Please note that company data can not be published here. Furthermore, results and insights, including the final report, are not permitted to be shared here.
+

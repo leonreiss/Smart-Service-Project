@@ -1,0 +1,337 @@
+---
+title: "Final Model Testing"
+author: "Leon Reiß"
+date: "`r Sys.Date()`"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Adding Function for package installation
+
+```{r installation function}
+# Function to install and load a package if not already installed
+install_and_load <- function(package_name) {
+  # Check if the package is installed
+  if (!require(package_name, character.only = TRUE)) {
+    # Install the package if it is not installed
+    install.packages(package_name)
+    # Load the package after installation
+    library(package_name, character.only = TRUE)
+  } else {
+    # Load the package if it is already installed
+    library(package_name, character.only = TRUE)
+  }
+}
+```
+
+# Load Dataframe from Pipeline
+```{r load DF}
+# Load necessary libraries
+install_and_load("readxl")
+
+# Read final excel file from pipeline
+# Adjust Directory!
+Monteursbezoeken_TTL <- read_excel("C:/Users/User/Documents/Maastricht University/Master/Smart Service Project/Data model testing/Monteursbezoeken_TTL.xlsx")
+
+```
+
+# Prepare feature-Dataframe
+
+## One hot encoding
+
+```{r one hot encoding}
+# Create a subset of Monteursbezoeken_TTL with the relevant features
+relevant_features <- Monteursbezoeken_TTL %>%
+  select(
+    Csolvable, Age_in_days, current_date_in_days, Date_Last_Error_Code_Before, 
+    Days_since_last_error_code, Csolvable_Last_Error_Code_Before, 
+    Qty_Materials_used_Last_Error_Code_Before, Error_Code_Count_Before, 
+    CS_Error_Code_Count_Before, T, P, R, Max_Delta_T
+  )
+
+# One-hot encode the 'Csolvable_Last_Error_Code_Before' column
+one_hot_encoded <- model.matrix(~ Csolvable_Last_Error_Code_Before - 1, data = relevant_features)
+
+# Combine the one-hot encoded columns with the rest of the data
+relevant_features <- cbind(relevant_features, one_hot_encoded)
+
+# Remove the original 'Csolvable_Last_Error_Code_Before' column
+relevant_features <- relevant_features %>%
+  select(-Csolvable_Last_Error_Code_Before)
+```
+
+## Feature-Dataframe adjustment
+
+```{r DF adjustments}
+# Convert target variable (Csolvable) to factor and rename levels
+relevant_features$Csolvable <- as.factor(relevant_features$Csolvable)
+levels(relevant_features$Csolvable) <- c("No", "Yes")
+
+# Remove current_date_in_days
+relevant_features <- relevant_features %>%
+  select(-current_date_in_days)
+
+# View the updated dataframe
+head(relevant_features)
+```
+
+# Model Testing
+
+## !!Run this code only if you want to test functionality of the code. It will reduce the sample-size to 100
+
+This will ensure that the models train faster. Using the full sample size can result in 1-2 hours of computation time. Reducing the sample will potentially reduce the model performance drastically!
+
+```{r Sample reduction}
+# Load necessary libraries
+install_and_load("caret")
+install_and_load("dplyr")
+
+# Set the seed for reproducibility
+set.seed(123)
+
+# Create a subsample of 100 observations
+subsample_index <- createDataPartition(relevant_features$Csolvable, p = 100/nrow(relevant_features), list = FALSE)
+
+# Create the subsample
+relevant_features <- relevant_features[subsample_index, ]
+```
+
+## Logistic Regression
+
+```{r logistic regression}
+# Load necessary libraries
+install_and_load("caret")
+install_and_load("pROC")
+
+# Set up 10-fold cross-validation
+train_control <- trainControl(method = "cv", number = 10, 
+                              summaryFunction = twoClassSummary, 
+                              classProbs = TRUE, 
+                              savePredictions = "final")
+
+# Train the logistic regression model with 10-fold cross-validation
+set.seed(123)
+model <- train(Csolvable ~ ., data = relevant_features, 
+               method = "glm", 
+               family = "binomial", 
+               trControl = train_control, 
+               metric = "ROC")
+
+# Print model results
+print(model)
+
+# Detailed summary of the model
+summary(model)
+
+# Get predictions from cross-validation
+predictions <- model$pred
+
+# Plot ROC curve
+roc_curve <- roc(predictions$obs, predictions$Yes)
+plot(roc_curve, main="ROC Curve", col="blue")
+print(paste("AUC:", auc(roc_curve)))
+
+# Get predictions with probabilities from cross-validation
+predictions <- model$pred
+
+# Define a custom threshold
+custom_threshold <- 0.6
+
+# Classify based on the custom threshold
+predictions$custom_pred <- ifelse(predictions$Yes >= custom_threshold, "Yes", "No")
+
+# Convert to factor
+predictions$custom_pred <- as.factor(predictions$custom_pred)
+
+# Generate confusion matrix
+conf_matrix_custom <- confusionMatrix(predictions$custom_pred, predictions$obs)
+print(conf_matrix_custom)
+
+# Function to evaluate model at different thresholds
+evaluate_threshold <- function(threshold) {
+  predictions$custom_pred <- ifelse(predictions$Yes >= threshold, "Yes", "No")
+  predictions$custom_pred <- as.factor(predictions$custom_pred)
+  conf_matrix <- confusionMatrix(predictions$custom_pred, predictions$obs)
+  return(list(threshold = threshold, conf_matrix = conf_matrix))
+}
+
+# Evaluate at different thresholds
+thresholds <- seq(0.2, 0.7, by = 0.05)
+results <- lapply(thresholds, evaluate_threshold)
+
+# Print results for each threshold
+for (result in results) {
+  cat("Threshold:", result$threshold, "\n")
+  print(result$conf_matrix)
+  cat("\n")
+}
+```
+
+## Decision Tree
+
+```{r dtree}
+# Load necessary libraries
+install_and_load("caret")
+install_and_load("dplyr")
+install_and_load("rpart")
+install_and_load("rpart.plot")
+
+# Define the cross-validation method
+train_control <- trainControl(method = "cv", number = 10)
+
+# Train the decision tree model
+model <- train(Csolvable ~ ., data = relevant_features, method = "rpart",
+               trControl = train_control)
+
+# Print the model summary
+print(model)
+
+# Plot the decision tree
+rpart.plot(model$finalModel)
+
+# Evaluate the model performance using cross-validation
+predictions <- predict(model, relevant_features)
+confusionMatrix(predictions, relevant_features$Csolvable)
+```
+
+### Decision Tree with oversampling minority class and cp adjustment
+
+```{r dtree 2}
+# Load necessary libraries
+install_and_load("caret")
+install_and_load("dplyr")
+install_and_load("rpart")
+install_and_load("rpart.plot")
+install_and_load("ROSE")
+
+
+# Apply ROSE to balance the classes
+set.seed(123)
+balanced_data <- ROSE(Csolvable ~ ., data = relevant_features, seed = 123)$data
+
+# Verify the class balance
+table(balanced_data$Csolvable)
+
+# Define the cross-validation method
+train_control <- trainControl(method = "cv", number = 10, summaryFunction = twoClassSummary, classProbs = TRUE)
+
+# Train the decision tree model with adjusted parameters
+set.seed(123)
+model <- train(Csolvable ~ ., data = balanced_data, method = "rpart",
+               trControl = train_control,
+               tuneGrid = expand.grid(cp = seq(0.0001, 0.001, by = 0.0001)))
+
+# Print the model summary
+print(model)
+
+# Plot the decision tree
+rpart.plot(model$finalModel)
+
+# Evaluate the model performance using cross-validation
+predictions <- predict(model, relevant_features)
+confusionMatrix(predictions, relevant_features$Csolvable)
+
+# Generate ROC curve
+predictions_prob <- predict(model, relevant_features, type = "prob")
+roc_curve <- roc(relevant_features$Csolvable, predictions_prob$Yes)
+plot(roc_curve, main="ROC Curve", col="blue")
+print(paste("AUC:", auc(roc_curve)))
+```
+
+## Random Forest
+
+```{r rf}
+# Load necessary libraries
+install_and_load("caret")
+install_and_load("dplyr")
+install_and_load("randomForest")
+
+
+set.seed(123)
+
+# Define the cross-validation method
+train_control <- trainControl(method = "cv", number = 5, summaryFunction = twoClassSummary, classProbs = TRUE)
+
+# Train the Random Forest model with cross-validation
+set.seed(123)
+rf_model <- train(Csolvable ~ ., data = relevant_features, method = "rf",
+                  trControl = train_control, 
+                  tuneLength = 5,  #You can increase this for more thorough tuning
+                  metric = "ROC")
+
+# Print the model summary
+print(rf_model)
+
+# Evaluate the model performance using cross-validation
+predictions <- predict(rf_model, relevant_features)
+confusionMatrix(predictions, relevant_features$Csolvable)
+
+# Generate ROC curve
+predictions_prob <- predict(rf_model, relevant_features, type = "prob")
+roc_curve <- roc(relevant_features$Csolvable, predictions_prob$Yes)
+plot(roc_curve, main="ROC Curve", col="blue")
+print(paste("AUC:", auc(roc_curve)))
+```
+
+### Variable Importance for Random Forest
+
+```{r feature importance}
+# Extract the Random Forest model from the train object
+model_rf <- rf_model$finalModel
+
+# Print the importance of each feature
+importance_rf <- importance(model_rf)
+print(importance_rf)
+
+# Convert importance to a data frame for visualization
+importance_df_rf <- data.frame(
+  Feature = rownames(importance_rf),
+  Importance = importance_rf[, "MeanDecreaseGini"]
+)
+
+# Plot the feature importance for the Random Forest model
+ggplot(importance_df_rf, aes(x = reorder(Feature, Importance), y = Importance)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  xlab("Features") +
+  ylab("Importance") +
+  ggtitle("Feature Importance - Random Forest")
+
+```
+
+## Gradient Boosting Machine (GBM)
+```{r GBM}
+# Load necessary libraries
+install_and_load("caret")
+install_and_load("dplyr")
+install_and_load("gbm")
+
+
+set.seed(123)
+
+# Define the cross-validation method
+train_control <- trainControl(method = "cv", number = 5, summaryFunction = twoClassSummary, classProbs = TRUE)
+
+# Train the GBM model with cross-validation
+gbm_model <- train(Csolvable ~ ., data = relevant_features, method = "gbm",
+                   trControl = train_control, 
+                   tuneLength = 5,  # You can increase this for more thorough tuning
+                   metric = "ROC", 
+                   verbose = FALSE)
+
+# Print the model summary
+print(gbm_model)
+
+# Evaluate the model performance using cross-validation
+predictions <- predict(gbm_model, relevant_features)
+confusionMatrix(predictions, relevant_features$Csolvable)
+
+# Generate ROC curve
+predictions_prob <- predict(gbm_model, relevant_features, type = "prob")
+roc_curve <- roc(relevant_features$Csolvable, predictions_prob$Yes)
+plot(roc_curve, main="ROC Curve", col="blue")
+print(paste("AUC:", auc(roc_curve)))
+```

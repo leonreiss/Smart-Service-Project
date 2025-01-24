@@ -1,4 +1,4 @@
-# Smart Service Project: Predictive Maintenance for Volta Limburg
+# Smart Service Project: Decision Support System for Volta Limburg
 
 Project Overview:
 - This project aims to improve the efficiency of Volta Limburg's technicians by introducing a machine learning model that classifies heating appliance problems as either customer-solvable or technician-required
